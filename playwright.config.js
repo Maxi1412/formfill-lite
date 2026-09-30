@@ -6,6 +6,7 @@ module.exports = defineConfig({
   retries: 1,
   use: {
     browserName: 'chromium',
+    channel: 'chrome',
     headless: true,
     viewport: { width: 1600, height: 1000 }
   },
