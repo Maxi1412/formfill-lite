@@ -1,5 +1,9 @@
 name: FormFill Lite QA
 
+concurrency:
+  group: formfill-lite-qa
+  cancel-in-progress: true
+
 on:
   push:
     branches: [main]
