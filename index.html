@@ -136,7 +136,7 @@
       <option value="20">20 pt</option>
       <option value="24">24 pt</option>
     </select>
-    <button id="installBtn" class="toolbtn" style="display:none" title="Install FormFill Lite on this computer">Install App</button>
+    <button id="installBtn" class="toolbtn" title="Install FormFill Lite on this computer">Install App</button>
     <div class="spacer"></div>
     <button id="undoBtn" class="toolbtn" disabled>Undo</button>
     <button id="redoBtn" class="toolbtn" disabled>Redo</button>
@@ -952,11 +952,13 @@
   });
 
   els.installBtn.addEventListener('click',async()=>{
-    if(!deferredInstallPrompt)return;
-    deferredInstallPrompt.prompt();
-    try{await deferredInstallPrompt.userChoice;}catch(_){}
-    deferredInstallPrompt=null;
-    els.installBtn.style.display='none';
+    if(deferredInstallPrompt){
+      deferredInstallPrompt.prompt();
+      try{await deferredInstallPrompt.userChoice;}catch(_){}
+      deferredInstallPrompt=null;
+      return;
+    }
+    window.alert('In Chrome, open the ⋮ menu and choose “Cast, save, and share” → “Install FormFill Lite” or “Create shortcut”.');
   });
 
   window.addEventListener('appinstalled',()=>{
