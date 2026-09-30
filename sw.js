@@ -1,10 +1,10 @@
-const CACHE_NAME = 'formfill-lite-v4';
+const CACHE_NAME = 'formfill-lite-v5';
 const CORE = [
   './',
   './index.html',
   './manifest.webmanifest',
-  './icons/icon-192.png',
-  './icons/icon-512.png'
+  './icons/icon-192.svg',
+  './icons/icon-512.svg'
 ];
 const EXTERNAL = [
   'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js',
