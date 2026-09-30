@@ -147,14 +147,14 @@
     <span id="zoomStatus" class="zoomStatus">100%</span>
     <button id="zoomInBtn" disabled>+</button>
     <button id="fitBtn" disabled>Fit width</button>
-    <span class="hint">Double-click any field to type. Select added text to drag or use arrow keys for fine alignment.</span>
+    <span class="hint">Double-click a PDF field to type from its left edge. Select added text to drag or use arrow keys for fine alignment.</span>
   </div>
 
   <main class="workspace">
     <section id="viewer" class="viewer">
       <div id="empty" class="empty">
         <h1>Fill PDF forms without changing the layout</h1>
-        <p>The PDF remains a locked background. Double-click directly inside a field and type on the document itself.</p>
+        <p>The PDF remains locked. Double-click inside a form field and typing snaps to that field’s left edge automatically.</p>
         <button id="emptyOpenBtn" class="bigOpen">Open a PDF</button>
         <p style="font-size:12px;margin-bottom:0">Your PDF is processed locally in this browser and is not uploaded to FormFill Lite.</p>
       </div>
@@ -219,6 +219,7 @@
   let scale=1.25;
   let currentTool='select';
   let currentViewport=null;
+  let currentPdfFields=[];
   let annotations=[];
   let selectedId=null;
   let drag=null;
@@ -400,13 +401,26 @@
     els.overlay.style.width=viewport.width+'px';
     els.overlay.style.height=viewport.height+'px';
 
-    await page.render({
-      canvasContext:ctx,
-      viewport,
-      transform:dpr===1?null:[dpr,0,0,dpr,0,0]
-    }).promise;
+    const [pageAnnotations] = await Promise.all([
+      page.getAnnotations({intent:'display'}),
+      page.render({
+        canvasContext:ctx,
+        viewport,
+        transform:dpr===1?null:[dpr,0,0,dpr,0,0]
+      }).promise
+    ]);
 
     if(token!==renderToken)return;
+
+    currentPdfFields=(pageAnnotations||[])
+      .filter(a=>a && a.subtype==='Widget' && a.fieldType==='Tx' && Array.isArray(a.rect) && a.rect.length===4)
+      .map(a=>{
+        const x1=Math.min(a.rect[0],a.rect[2]);
+        const x2=Math.max(a.rect[0],a.rect[2]);
+        const y1=Math.min(a.rect[1],a.rect[3]);
+        const y2=Math.max(a.rect[1],a.rect[3]);
+        return {x1,x2,y1,y2,fieldName:a.fieldName||''};
+      });
     els.pageStatus.textContent='Page '+pageNo+' / '+pdfDoc.numPages;
     els.zoomStatus.textContent=Math.round(scale*100)+'%';
     els.prevBtn.disabled=pageNo<=1;
@@ -463,7 +477,7 @@
     };
   }
 
-  function createInlineEditor(cssX,baselineY,fontPt,text='',id=null){
+  function createInlineEditor(cssX,baselineY,fontPt,text='',id=null,fieldRect=null){
     commitInlineEditor();
     const metrics=getFontMetrics(fontPt);
     const input=document.createElement('input');
@@ -471,10 +485,29 @@
     input.className='inlineEditor';
     input.value=text;
     input.style.left=cssX+'px';
-    input.style.top=(baselineY-metrics.ascent-2)+'px';
+    input.style.top=(baselineY-metrics.ascent-1)+'px';
     input.style.fontSize=metrics.px+'px';
-    input.style.height=Math.max(20,metrics.ascent+metrics.descent+6)+'px';
-    input.style.minWidth=Math.max(90,Math.min(360,(text.length+4)*metrics.px*.58))+'px';
+    input.style.height=Math.max(18,metrics.ascent+metrics.descent+4)+'px';
+
+    if(fieldRect){
+      const [leftCss,topCss]=pdfToCss(fieldRect.x1,fieldRect.y2);
+      const [rightCss,bottomCss]=pdfToCss(fieldRect.x2,fieldRect.y1);
+      const fieldWidth=Math.max(40,Math.abs(rightCss-leftCss));
+      const fieldHeight=Math.max(16,Math.abs(bottomCss-topCss));
+      input.style.left=(Math.min(leftCss,rightCss)+2)+'px';
+      input.style.top=(Math.min(topCss,bottomCss)+1)+'px';
+      input.style.width=Math.max(36,fieldWidth-4)+'px';
+      input.style.minWidth='0';
+      input.style.maxWidth='none';
+      input.style.height=Math.max(16,fieldHeight-2)+'px';
+      input.dataset.fieldX1=String(fieldRect.x1);
+      input.dataset.fieldX2=String(fieldRect.x2);
+      input.dataset.fieldY1=String(fieldRect.y1);
+      input.dataset.fieldY2=String(fieldRect.y2);
+    }else{
+      input.style.minWidth=Math.max(90,Math.min(360,(text.length+4)*metrics.px*.58))+'px';
+    }
+
     input.dataset.baseline=String(baselineY);
     input.dataset.fontPt=String(fontPt);
     editingId=id;
@@ -482,7 +515,9 @@
     els.overlay.appendChild(input);
 
     input.addEventListener('input',()=>{
-      input.style.width=Math.max(90,Math.min(520,(input.value.length+3)*metrics.px*.58))+'px';
+      if(!input.dataset.fieldX1){
+        input.style.width=Math.max(90,Math.min(520,(input.value.length+3)*metrics.px*.58))+'px';
+      }
     });
     input.addEventListener('keydown',ev=>{
       if(ev.key==='Enter'){
@@ -500,17 +535,50 @@
     },0);
   }
 
+  function findTextFieldAt(cssX,cssY){
+    if(!currentViewport||!currentPdfFields.length)return null;
+    const [pdfX,pdfY]=cssToPdf(cssX,cssY);
+    return currentPdfFields.find(f=>
+      pdfX>=f.x1-1 && pdfX<=f.x2+1 &&
+      pdfY>=f.y1-1 && pdfY<=f.y2+1
+    )||null;
+  }
+
+  function fieldTextPlacement(field,fontPt){
+    const fieldHeight=Math.max(1,field.y2-field.y1);
+    const fittedFont=Math.min(fontPt,Math.max(8,fieldHeight*.72));
+    const paddingX=Math.min(3,Math.max(1.5,(field.x2-field.x1)*.015));
+    const baselinePdfY=field.y1 + Math.max(1.8,(fieldHeight-fittedFont)*.5 + fittedFont*.18);
+    const [cssX,baselineY]=pdfToCss(field.x1+paddingX,baselinePdfY);
+    return {cssX,baselineY,fontPt:fittedFont};
+  }
+
   function startInlineEditorAt(cssX,cssY){
-    const fontPt=Number(els.fontSize.value)||11;
-    const metrics=getFontMetrics(fontPt);
-    const baselineY=cssY+metrics.px*.28;
-    createInlineEditor(cssX,baselineY,fontPt,'',null);
+    const requestedFont=Number(els.fontSize.value)||11;
+    const field=findTextFieldAt(cssX,cssY);
+    if(field){
+      const place=fieldTextPlacement(field,requestedFont);
+      createInlineEditor(place.cssX,place.baselineY,place.fontPt,'',null,field);
+      return;
+    }
+    const metrics=getFontMetrics(requestedFont);
+    const baselineY=cssY+metrics.px*.18;
+    createInlineEditor(cssX,baselineY,requestedFont,'',null);
   }
 
   function startInlineEditorForExisting(a){
     if(a.type!=='text')return;
     const [vx,vy]=pdfToCss(a.pdfX,a.pdfY);
-    createInlineEditor(vx,vy,a.fontSize||11,a.text,a.id);
+    let field=null;
+    if(a.fieldRect){
+      field=a.fieldRect;
+    }else{
+      field=currentPdfFields.find(f=>
+        a.pdfX>=f.x1-4 && a.pdfX<=f.x2+4 &&
+        a.pdfY>=f.y1-4 && a.pdfY<=f.y2+4
+      )||null;
+    }
+    createInlineEditor(vx,vy,a.fontSize||11,a.text,a.id,field);
     const el=els.overlay.querySelector('.anno[data-id="'+a.id+'"]');
     if(el)el.style.visibility='hidden';
   }
@@ -528,8 +596,22 @@
     const input=inlineEditor;
     const text=input.value.trim();
     const fontPt=Number(input.dataset.fontPt)||11;
-    const left=parseFloat(input.style.left)||0;
-    const baselineY=Number(input.dataset.baseline)||0;
+    let left=parseFloat(input.style.left)||0;
+    let baselineY=Number(input.dataset.baseline)||0;
+    let fieldRect=null;
+
+    if(input.dataset.fieldX1){
+      fieldRect={
+        x1:Number(input.dataset.fieldX1),
+        x2:Number(input.dataset.fieldX2),
+        y1:Number(input.dataset.fieldY1),
+        y2:Number(input.dataset.fieldY2)
+      };
+      const place=fieldTextPlacement(fieldRect,fontPt);
+      left=place.cssX;
+      baselineY=place.baselineY;
+    }
+
     const id=editingId;
 
     input.remove();
@@ -545,6 +627,7 @@
           a.pdfX=pdfX;
           a.pdfY=pdfY;
           a.fontSize=fontPt;
+          a.fieldRect=fieldRect||a.fieldRect||null;
         }else{
           annotations=annotations.filter(x=>x.id!==id);
           selectedId=null;
@@ -553,7 +636,7 @@
       }
     }else if(text){
       const [pdfX,pdfY]=cssToPdf(left,baselineY);
-      const a={id:uid(),page:pageNo,type:'text',pdfX,pdfY,text,fontSize:fontPt};
+      const a={id:uid(),page:pageNo,type:'text',pdfX,pdfY,text,fontSize:fontPt,fieldRect};
       annotations.push(a);
       selectedId=a.id;
       snapshot();
