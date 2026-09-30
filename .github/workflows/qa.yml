@@ -18,5 +18,4 @@ jobs:
         with:
           node-version: '24'
       - run: npm install --no-audit --no-fund
-      - run: npx playwright install --with-deps chromium
       - run: npm run test:e2e
