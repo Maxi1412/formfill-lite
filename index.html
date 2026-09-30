@@ -5,6 +5,11 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>FormFill Lite</title>
   <meta name="description" content="Fill fixed-layout PDF forms directly in your browser without changing the original document." />
+  <meta name="theme-color" content="#17181b" />
+  <meta name="referrer" content="no-referrer" />
+  <link rel="manifest" href="./manifest.webmanifest" />
+  <link rel="icon" type="image/png" sizes="192x192" href="./icons/icon-192.png" />
+  <link rel="apple-touch-icon" href="./icons/icon-192.png" />
   <style>
     :root{
       --bg:#f3f4f6;--ink:#1f2937;--muted:#6b7280;--line:#d1d5db;
@@ -131,6 +136,7 @@
       <option value="20">20 pt</option>
       <option value="24">24 pt</option>
     </select>
+    <button id="installBtn" class="toolbtn" style="display:none" title="Install FormFill Lite on this computer">Install App</button>
     <div class="spacer"></div>
     <button id="undoBtn" class="toolbtn" disabled>Undo</button>
     <button id="redoBtn" class="toolbtn" disabled>Redo</button>
@@ -190,6 +196,7 @@
     checkTool:document.getElementById('checkTool'),
     xTool:document.getElementById('xTool'),
     fontSize:document.getElementById('fontSize'),
+    installBtn:document.getElementById('installBtn'),
     undoBtn:document.getElementById('undoBtn'),
     redoBtn:document.getElementById('redoBtn'),
     deleteBtn:document.getElementById('deleteBtn'),
@@ -220,6 +227,7 @@
   let currentTool='select';
   let currentViewport=null;
   let currentPdfFields=[];
+  let currentPdfButtons=[];
   let annotations=[];
   let selectedId=null;
   let drag=null;
@@ -228,6 +236,8 @@
   let renderToken=0;
   let history=[[]];
   let historyIndex=0;
+  let dirty=false;
+  let deferredInstallPrompt=null;
 
   if(!window.pdfjsLib || !window.PDFLib){
     showFatal('The PDF libraries could not load. Check your internet connection and refresh the page.');
@@ -265,6 +275,7 @@
     if(historyIndex<history.length-1) history=history.slice(0,historyIndex+1);
     history.push(deepClone(annotations));
     historyIndex=history.length-1;
+    dirty=true;
     updateHistoryButtons();
   }
   function resetHistory(){
@@ -355,11 +366,17 @@
       const buf=await file.arrayBuffer();
       originalBytes=new Uint8Array(buf);
       originalFileName=file.name||'document.pdf';
-      pdfDoc=await pdfjsLib.getDocument({data:originalBytes.slice()}).promise;
+      els.errorBanner.style.display='none';
+      els.errorBanner.textContent='';
+      pdfDoc=await pdfjsLib.getDocument({
+        data:originalBytes.slice(),
+        isEvalSupported:false
+      }).promise;
       pageNo=1;
       scale=1.25;
       annotations=[];
       selectedId=null;
+      dirty=false;
       resetHistory();
       els.fileName.textContent=originalFileName;
       els.empty.style.display='none';
@@ -412,15 +429,23 @@
 
     if(token!==renderToken)return;
 
-    currentPdfFields=(pageAnnotations||[])
-      .filter(a=>a && a.subtype==='Widget' && a.fieldType==='Tx' && Array.isArray(a.rect) && a.rect.length===4)
-      .map(a=>{
-        const x1=Math.min(a.rect[0],a.rect[2]);
-        const x2=Math.max(a.rect[0],a.rect[2]);
-        const y1=Math.min(a.rect[1],a.rect[3]);
-        const y2=Math.max(a.rect[1],a.rect[3]);
-        return {x1,x2,y1,y2,fieldName:a.fieldName||''};
-      });
+    const widgetRects=(pageAnnotations||[])
+      .filter(a=>a && a.subtype==='Widget' && Array.isArray(a.rect) && a.rect.length===4)
+      .map(a=>({
+        source:a,
+        x1:Math.min(a.rect[0],a.rect[2]),
+        x2:Math.max(a.rect[0],a.rect[2]),
+        y1:Math.min(a.rect[1],a.rect[3]),
+        y2:Math.max(a.rect[1],a.rect[3])
+      }));
+
+    currentPdfFields=widgetRects
+      .filter(w=>w.source.fieldType==='Tx')
+      .map(w=>({x1:w.x1,x2:w.x2,y1:w.y1,y2:w.y2,fieldName:w.source.fieldName||''}));
+
+    currentPdfButtons=widgetRects
+      .filter(w=>w.source.fieldType==='Btn' && (w.source.checkBox||w.source.radioButton))
+      .map(w=>({x1:w.x1,x2:w.x2,y1:w.y1,y2:w.y2,fieldName:w.source.fieldName||''}));
     els.pageStatus.textContent='Page '+pageNo+' / '+pdfDoc.numPages;
     els.zoomStatus.textContent=Math.round(scale*100)+'%';
     els.prevBtn.disabled=pageNo<=1;
@@ -544,11 +569,26 @@
     )||null;
   }
 
-  function fieldTextPlacement(field,fontPt){
+  function fitFontToField(text,field,fontPt){
+    const fieldWidth=Math.max(1,field.x2-field.x1);
     const fieldHeight=Math.max(1,field.y2-field.y1);
-    const fittedFont=Math.min(fontPt,Math.max(8,fieldHeight*.72));
+    const paddingX=Math.min(3,Math.max(1.5,fieldWidth*.015));
+    let fitted=Math.min(fontPt,Math.max(7,fieldHeight*.72));
+    if(text){
+      const c=fitFontToField._canvas||(fitFontToField._canvas=document.createElement('canvas'));
+      const ctx=c.getContext('2d');
+      ctx.font='100px Arial';
+      const units=Math.max(1,ctx.measureText(text).width/100);
+      fitted=Math.min(fitted,(fieldWidth-paddingX*2)/units);
+    }
+    return Math.max(6,Math.min(fontPt,fitted));
+  }
+
+  function fieldTextPlacement(field,fontPt,text=''){
+    const fieldHeight=Math.max(1,field.y2-field.y1);
+    const fittedFont=fitFontToField(text,field,fontPt);
     const paddingX=Math.min(3,Math.max(1.5,(field.x2-field.x1)*.015));
-    const baselinePdfY=field.y1 + Math.max(1.8,(fieldHeight-fittedFont)*.5 + fittedFont*.18);
+    const baselinePdfY=field.y1 + Math.max(1.6,(fieldHeight-fittedFont)*.5 + fittedFont*.18);
     const [cssX,baselineY]=pdfToCss(field.x1+paddingX,baselinePdfY);
     return {cssX,baselineY,fontPt:fittedFont};
   }
@@ -557,7 +597,7 @@
     const requestedFont=Number(els.fontSize.value)||11;
     const field=findTextFieldAt(cssX,cssY);
     if(field){
-      const place=fieldTextPlacement(field,requestedFont);
+      const place=fieldTextPlacement(field,requestedFont,'');
       createInlineEditor(place.cssX,place.baselineY,place.fontPt,'',null,field);
       return;
     }
@@ -578,7 +618,12 @@
         a.pdfY>=f.y1-4 && a.pdfY<=f.y2+4
       )||null;
     }
-    createInlineEditor(vx,vy,a.fontSize||11,a.text,a.id,field);
+    if(field){
+      const place=fieldTextPlacement(field,a.fontSize||11,a.text||'');
+      createInlineEditor(place.cssX,place.baselineY,place.fontPt,a.text,a.id,field);
+    }else{
+      createInlineEditor(vx,vy,a.fontSize||11,a.text,a.id,null);
+    }
     const el=els.overlay.querySelector('.anno[data-id="'+a.id+'"]');
     if(el)el.style.visibility='hidden';
   }
@@ -607,7 +652,7 @@
         y1:Number(input.dataset.fieldY1),
         y2:Number(input.dataset.fieldY2)
       };
-      const place=fieldTextPlacement(fieldRect,fontPt);
+      const place=fieldTextPlacement(fieldRect,fontPt,text);
       left=place.cssX;
       baselineY=place.baselineY;
     }
@@ -626,7 +671,7 @@
           a.text=text;
           a.pdfX=pdfX;
           a.pdfY=pdfY;
-          a.fontSize=fontPt;
+          a.fontSize=fieldRect?fieldTextPlacement(fieldRect,fontPt,text).fontPt:fontPt;
           a.fieldRect=fieldRect||a.fieldRect||null;
         }else{
           annotations=annotations.filter(x=>x.id!==id);
@@ -636,7 +681,8 @@
       }
     }else if(text){
       const [pdfX,pdfY]=cssToPdf(left,baselineY);
-      const a={id:uid(),page:pageNo,type:'text',pdfX,pdfY,text,fontSize:fontPt,fieldRect};
+      const fittedFont=fieldRect?fieldTextPlacement(fieldRect,fontPt,text).fontPt:fontPt;
+      const a={id:uid(),page:pageNo,type:'text',pdfX,pdfY,text,fontSize:fittedFont,fieldRect};
       annotations.push(a);
       selectedId=a.id;
       snapshot();
@@ -645,12 +691,31 @@
     updateSelectionUi();
   }
 
+  function findButtonFieldAt(cssX,cssY){
+    if(!currentViewport||!currentPdfButtons.length)return null;
+    const [pdfX,pdfY]=cssToPdf(cssX,cssY);
+    return currentPdfButtons.find(f=>
+      pdfX>=f.x1-1 && pdfX<=f.x2+1 &&
+      pdfY>=f.y1-1 && pdfY<=f.y2+1
+    )||null;
+  }
+
   function addMark(type,cssX,cssY){
     commitInlineEditor();
-    const fontPt=Number(els.fontSize.value)||11;
-    const metrics=getFontMetrics(fontPt);
-    const baselineY=cssY+metrics.px*.25;
-    const [pdfX,pdfY]=cssToPdf(cssX,baselineY);
+    let fontPt=Number(els.fontSize.value)||11;
+    let pdfX,pdfY;
+    const buttonField=findButtonFieldAt(cssX,cssY);
+    if(buttonField){
+      const fw=buttonField.x2-buttonField.x1;
+      const fh=buttonField.y2-buttonField.y1;
+      fontPt=Math.max(7,Math.min(fontPt,Math.min(fw,fh)*.8));
+      pdfX=buttonField.x1+Math.max(1,(fw-fontPt*.72)/2);
+      pdfY=buttonField.y1+Math.max(1,(fh-fontPt*.72)/2);
+    }else{
+      const metrics=getFontMetrics(fontPt);
+      const baselineY=cssY+metrics.px*.25;
+      [pdfX,pdfY]=cssToPdf(cssX,baselineY);
+    }
     const a={id:uid(),page:pageNo,type,pdfX,pdfY,fontSize:fontPt};
     annotations.push(a);
     selectedId=a.id;
@@ -691,6 +756,7 @@
     const [pdfX,pdfY]=cssToPdf(sx+dxCss,sy+dyCss);
     a.pdfX=pdfX;
     a.pdfY=pdfY;
+    if(Math.abs(dxCss)>1||Math.abs(dyCss)>1) a.fieldRect=null;
     drag.moved=drag.moved||Math.abs(dxCss)>1||Math.abs(dyCss)>1;
     renderAnnotations();
   });
@@ -704,7 +770,14 @@
   els.fontSize.addEventListener('change',()=>{
     const a=annotations.find(x=>x.id===selectedId);
     if(a){
-      a.fontSize=Number(els.fontSize.value)||11;
+      const requested=Number(els.fontSize.value)||11;
+      if(a.type==='text'&&a.fieldRect){
+        const place=fieldTextPlacement(a.fieldRect,requested,a.text||'');
+        const [pdfX,pdfY]=cssToPdf(place.cssX,place.baselineY);
+        a.pdfX=pdfX;a.pdfY=pdfY;a.fontSize=place.fontPt;
+      }else{
+        a.fontSize=requested;
+      }
       snapshot();
       renderAnnotations();
     }
@@ -715,6 +788,7 @@
     if(!a)return;
     a.pdfX+=dxPt;
     a.pdfY+=dyPt;
+    a.fieldRect=null;
     snapshot();
     renderAnnotations();
   }
@@ -735,9 +809,23 @@
         if(!page)continue;
         const size=a.fontSize||11;
         if(a.type==='text'){
-          page.drawText(String(a.text||''),{
-            x:a.pdfX,y:a.pdfY,size,font,color:PDFLib.rgb(0,0,0)
-          });
+          const value=String(a.text||'');
+          let drawSize=size;
+          let drawX=a.pdfX;
+          let drawY=a.pdfY;
+          if(a.fieldRect){
+            const field=a.fieldRect;
+            const fieldWidth=Math.max(1,field.x2-field.x1);
+            const fieldHeight=Math.max(1,field.y2-field.y1);
+            const paddingX=Math.min(3,Math.max(1.5,fieldWidth*.015));
+            const available=Math.max(1,fieldWidth-paddingX*2);
+            const measured=Math.max(.01,font.widthOfTextAtSize(value,drawSize));
+            if(measured>available) drawSize=Math.max(6,drawSize*(available/measured));
+            drawSize=Math.min(drawSize,Math.max(7,fieldHeight*.72));
+            drawX=field.x1+paddingX;
+            drawY=field.y1+Math.max(1.6,(fieldHeight-drawSize)*.5+drawSize*.18);
+          }
+          page.drawText(value,{x:drawX,y:drawY,size:drawSize,font,color:PDFLib.rgb(0,0,0)});
         }else if(a.type==='x'){
           const s=size*.78;
           const y=a.pdfY+size*.05;
@@ -768,6 +856,7 @@
       link.click();
       link.remove();
       setTimeout(()=>URL.revokeObjectURL(url),1500);
+      dirty=false;
       setStatus('Completed PDF downloaded');
       toast('Completed PDF downloaded');
     }catch(err){
@@ -789,8 +878,13 @@
     await renderPage();
   }
 
-  els.openBtn.addEventListener('click',()=>els.fileInput.click());
-  els.emptyOpenBtn.addEventListener('click',()=>els.fileInput.click());
+  function requestOpenPdf(){
+    if(dirty && annotations.length && !window.confirm('You have unsaved additions. Open another PDF and discard them?')) return;
+    els.fileInput.click();
+  }
+
+  els.openBtn.addEventListener('click',requestOpenPdf);
+  els.emptyOpenBtn.addEventListener('click',requestOpenPdf);
   els.fileInput.addEventListener('change',()=>openFile(els.fileInput.files[0]));
   els.selectTool.addEventListener('click',()=>setTool('select'));
   els.textTool.addEventListener('click',()=>setTool('text'));
@@ -844,6 +938,42 @@
     const file=[...ev.dataTransfer.files].find(f=>f.type==='application/pdf'||f.name.toLowerCase().endsWith('.pdf'));
     if(file)openFile(file);
   });
+
+  window.addEventListener('beforeunload',ev=>{
+    if(!dirty)return;
+    ev.preventDefault();
+    ev.returnValue='';
+  });
+
+  window.addEventListener('beforeinstallprompt',ev=>{
+    ev.preventDefault();
+    deferredInstallPrompt=ev;
+    els.installBtn.style.display='inline-flex';
+  });
+
+  els.installBtn.addEventListener('click',async()=>{
+    if(!deferredInstallPrompt)return;
+    deferredInstallPrompt.prompt();
+    try{await deferredInstallPrompt.userChoice;}catch(_){}
+    deferredInstallPrompt=null;
+    els.installBtn.style.display='none';
+  });
+
+  window.addEventListener('appinstalled',()=>{
+    deferredInstallPrompt=null;
+    els.installBtn.style.display='none';
+    toast('FormFill Lite installed');
+  });
+
+  if('serviceWorker' in navigator){
+    window.addEventListener('load',()=>{
+      navigator.serviceWorker.register('./sw.js').catch(err=>console.warn('Service worker registration failed',err));
+    });
+  }
+
+  if(window.matchMedia && window.matchMedia('(display-mode: standalone)').matches){
+    els.installBtn.style.display='none';
+  }
 
   setTool('select');
   setStatus('Ready');
