@@ -1,4 +1,4 @@
-const CACHE_NAME = 'formfill-lite-v5';
+const CACHE_NAME = 'formfill-lite-v6';
 const CORE = [
   './',
   './index.html',
@@ -7,8 +7,8 @@ const CORE = [
   './icons/icon-512.svg'
 ];
 const EXTERNAL = [
-  'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js',
-  'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js',
+  'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.2.67/pdf.min.mjs',
+  'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.2.67/pdf.worker.min.mjs',
   'https://cdn.jsdelivr.net/npm/pdf-lib@1.17.1/dist/pdf-lib.min.js'
 ];
 
