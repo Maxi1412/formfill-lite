@@ -1,4 +1,4 @@
-const CACHE_NAME = 'formfill-lite-v6';
+const CACHE_NAME = 'formfill-lite-v7';
 const CORE = [
   './',
   './index.html',
@@ -32,11 +32,34 @@ self.addEventListener('activate', event => {
   })());
 });
 
+self.addEventListener('message', event => {
+  if (event.data && event.data.type === 'SKIP_WAITING') self.skipWaiting();
+});
+
 self.addEventListener('fetch', event => {
   const request = event.request;
   if (request.method !== 'GET') return;
 
   const url = new URL(request.url);
+
+  if (url.pathname.endsWith('/formfill-lite/google-calendar-connect.html')) {
+    event.respondWith((async () => {
+      try {
+        const response = await fetch(request, { cache: 'no-store' });
+        const headers = new Headers(response.headers);
+        headers.set('Cross-Origin-Opener-Policy', 'same-origin-allow-popups');
+        headers.set('X-Max-Planner-Calendar-Auth', 'formfill-coop-v1');
+        return new Response(response.body, {
+          status: response.status,
+          statusText: response.statusText,
+          headers
+        });
+      } catch (_) {
+        return Response.error();
+      }
+    })());
+    return;
+  }
 
   if (request.mode === 'navigate') {
     event.respondWith((async () => {
